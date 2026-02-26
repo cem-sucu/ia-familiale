@@ -1,21 +1,43 @@
-// Données de démonstration
-// sentAt   = heure à laquelle le message a été ÉCRIT
-// deliveredAt = heure à laquelle il a été LIVRÉ (peut être différente !)
+// statut : 'livre' = déjà reçu, 'en_attente' = attend le déclencheur
 export const MESSAGES_DEMO = [
   {
     id: '1',
     sender: 'Maman',
     text: 'Achète du pain en rentrant 🍞',
     sentAt: '15:00',
-    deliveredAt: '18:05',
+    deliveredAt: '15:00',
+    trigger: 'depart_travail',
+    statut: 'livre',
     isMe: false,
   },
   {
     id: '2',
     sender: 'Moi',
     text: 'OK pas de problème ! 👍',
-    sentAt: '18:06',
-    deliveredAt: '18:06',
+    sentAt: '15:01',
+    deliveredAt: '15:01',
+    trigger: 'maintenant',
+    statut: 'livre',
     isMe: true,
+  },
+  {
+    id: '3',
+    sender: 'Papa',
+    text: 'N\'oublie pas de récupérer le colis 📦',
+    sentAt: '16:30',
+    deliveredAt: null,
+    trigger: 'arrivee_maison',
+    statut: 'en_attente',
+    isMe: false,
+  },
+  {
+    id: '4',
+    sender: 'Maman',
+    text: 'J\'ai fait à manger, c\'est dans le micro-onde 🍽️',
+    sentAt: '17:00',
+    deliveredAt: null,
+    trigger: 'arrivee_maison',
+    statut: 'en_attente',
+    isMe: false,
   },
 ];

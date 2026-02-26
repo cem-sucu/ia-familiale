@@ -1,34 +1,57 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { COLORS } from '../constants/colors';
+import { TRIGGERS } from '../constants/triggers';
 
-// Une bulle de message
-// Props :
-//   sender      → nom de l'expéditeur (ex: "Maman")
-//   text        → contenu du message
-//   sentAt      → heure d'envoi (ex: "15:00")
-//   deliveredAt → heure de livraison (ex: "18:05")
-//   isMe        → true si c'est MOI qui ai envoyé
-export default function MessageBubble({ sender, text, sentAt, deliveredAt, isMe }) {
-  const estDiffere = sentAt !== deliveredAt;
+function getTrigger(id) {
+  return TRIGGERS.find((t) => t.id === id);
+}
+
+export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigger, statut, isMe }) {
+  const estEnAttente = statut === 'en_attente';
+  const estDiffere = deliveredAt && sentAt !== deliveredAt;
+  const infoDeclencheur = getTrigger(trigger);
 
   return (
-    <View style={[styles.bulle, isMe ? styles.bulleNous : styles.bulleEux]}>
+    <View style={[
+      styles.bulle,
+      isMe ? styles.bulleNous : styles.bulleEux,
+      estEnAttente && styles.bulleEnAttente,
+    ]}>
 
-      {/* Nom de l'expéditeur — uniquement pour les autres membres */}
-      {!isMe && <Text style={styles.expediteur}>{sender}</Text>}
+      {/* Nom de l'expéditeur */}
+      {!isMe && (
+        <Text style={[styles.expediteur, estEnAttente && styles.expediteurAttente]}>
+          {sender}
+        </Text>
+      )}
+
+      {/* Badge déclencheur */}
+      {trigger !== 'maintenant' && infoDeclencheur && (
+        <View style={[styles.badge, isMe && !estEnAttente && styles.badgeNous]}>
+          <Text style={[styles.badgeTexte, isMe && !estEnAttente && styles.badgeTexteNous]}>
+            {infoDeclencheur.icon} {infoDeclencheur.label}
+          </Text>
+        </View>
+      )}
 
       {/* Texte du message */}
-      <Text style={[styles.texte, isMe && styles.texteNous]}>
+      <Text style={[styles.texte, isMe && !estEnAttente && styles.texteNous]}>
         {text}
       </Text>
 
-      {/* Horodatage */}
+      {/* Horodatage ou indicateur d'attente */}
       <View style={styles.horodatage}>
-        <Text style={[styles.heure, isMe && styles.heureNous]}>
-          Envoyé {sentAt}
-        </Text>
-        {estDiffere && (
-          <Text style={styles.delai}> · Reçu {deliveredAt} ⏰</Text>
+        {estEnAttente ? (
+          <Text style={styles.enAttente}>⏳ En attente de livraison...</Text>
+        ) : (
+          <>
+            <Text style={[styles.heure, isMe && styles.heureNous]}>
+              Envoyé {sentAt}
+            </Text>
+            {estDiffere && (
+              <Text style={styles.delai}> · Reçu {deliveredAt} ⏰</Text>
+            )}
+          </>
         )}
       </View>
 
@@ -52,11 +75,40 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
     borderBottomRightRadius: 4,
   },
+  // Message en attente : fond blanc avec bordure pointillée
+  bulleEnAttente: {
+    backgroundColor: '#FFFBF0',
+    borderWidth: 1.5,
+    borderColor: '#F39C12',
+    borderStyle: 'dashed',
+  },
   expediteur: {
     fontSize: 12,
     fontWeight: 'bold',
     color: COLORS.violet,
     marginBottom: 4,
+  },
+  expediteurAttente: {
+    color: '#E67E22',
+  },
+  badge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(108,99,255,0.12)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 6,
+  },
+  badgeNous: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  badgeTexte: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.violet,
+  },
+  badgeTexteNous: {
+    color: COLORS.blanc,
   },
   texte: {
     fontSize: 15,
@@ -82,5 +134,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.delai,
     fontWeight: '600',
+  },
+  enAttente: {
+    fontSize: 11,
+    color: '#E67E22',
+    fontStyle: 'italic',
   },
 });
