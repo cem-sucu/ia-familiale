@@ -1,71 +1,80 @@
-import { useState } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MessageBubble from '../components/MessageBubble';
 import MessageInput from '../components/MessageInput';
 import MonEtat from '../components/MonEtat';
 import { COLORS } from '../constants/colors';
-import { DECLENCHEMENTS, ETAT_DEFAUT } from '../constants/etats';
+import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
-import { MESSAGES_DEMO } from '../data/demo';
+import { changerEtat, envoyerMessageAPI, getTousMessages } from '../services/api';
+
+// L'identifiant de l'utilisateur courant (en dur pour l'instant)
+const MON_ID = 'moi';
 
 export default function ChatScreen() {
-  const [messages, setMessages] = useState(MESSAGES_DEMO);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [trigger, setTrigger] = useState(TRIGGER_DEFAUT);
   const [etat, setEtat] = useState(ETAT_DEFAUT);
+  const [chargement, setChargement] = useState(true);
 
-  // Appelé quand l'utilisateur change son état (ex: "Je pars du travail")
-  function changerEtat(nouvelEtat) {
-    setEtat(nouvelEtat);
+  // Charge les messages depuis le serveur au démarrage
+  useEffect(() => {
+    chargerMessages();
+  }, []);
 
-    // Quel trigger faut-il déclencher avec ce nouvel état ?
-    const triggerADeclencher = DECLENCHEMENTS[nouvelEtat];
-    if (!triggerADeclencher) return;
-
-    // On cherche l'heure actuelle pour la livraison
-    const maintenant = new Date().toLocaleTimeString('fr-FR', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    // On met à jour tous les messages en attente avec ce trigger
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.statut === 'en_attente' && msg.trigger === triggerADeclencher) {
-          return {
-            ...msg,
-            statut: 'livre',
-            deliveredAt: maintenant,
-          };
-        }
-        return msg;
-      })
-    );
+  async function chargerMessages() {
+    try {
+      setChargement(true);
+      const data = await getTousMessages(MON_ID);
+      // On adapte le format du serveur au format de nos composants
+      setMessages(data.map(adapterMessage));
+    } catch (erreur) {
+      console.error('Impossible de charger les messages :', erreur);
+    } finally {
+      setChargement(false);
+    }
   }
 
-  function envoyerMessage() {
+  // Convertit le format serveur → format composants
+  function adapterMessage(msg) {
+    return {
+      id:          msg.id,
+      sender:      msg.expediteur_id,
+      text:        msg.texte,
+      sentAt:      msg.envoye_a,
+      deliveredAt: msg.livre_a,
+      trigger:     msg.trigger,
+      statut:      msg.statut,
+      isMe:        msg.expediteur_id === MON_ID,
+    };
+  }
+
+  async function handleChangerEtat(nouvelEtat) {
+    setEtat(nouvelEtat);
+    try {
+      await changerEtat(MON_ID, nouvelEtat);
+      // Recharge les messages — certains viennent d'être livrés !
+      await chargerMessages();
+    } catch (erreur) {
+      console.error('Erreur changement état :', erreur);
+    }
+  }
+
+  async function envoyerMessage() {
     if (input.trim() === '') return;
 
-    const maintenant = new Date().toLocaleTimeString('fr-FR', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    const nouveauMessage = {
-      id: Date.now().toString(),
-      sender: 'Moi',
-      text: input,
-      sentAt: maintenant,
-      deliveredAt: trigger === 'maintenant' ? maintenant : null,
-      trigger: trigger,
-      statut: trigger === 'maintenant' ? 'livre' : 'en_attente',
-      isMe: true,
-    };
-
-    setMessages((prev) => [...prev, nouveauMessage]);
+    const texte = input;
     setInput('');
     setTrigger(TRIGGER_DEFAUT);
+
+    try {
+      await envoyerMessageAPI(MON_ID, MON_ID, texte, trigger);
+      await chargerMessages();
+    } catch (erreur) {
+      console.error('Erreur envoi message :', erreur);
+    }
   }
 
   return (
@@ -77,26 +86,33 @@ export default function ChatScreen() {
         <Text style={styles.headerSousTitre}>3 membres connectés</Text>
       </View>
 
-      {/* Barre d'état de l'utilisateur */}
-      <MonEtat etat={etat} onChangerEtat={changerEtat} />
+      {/* Barre d'état */}
+      <MonEtat etat={etat} onChangerEtat={handleChangerEtat} />
 
-      {/* Liste des messages */}
-      <FlatList
-        data={messages}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.liste}
-        renderItem={({ item }) => (
-          <MessageBubble
-            sender={item.sender}
-            text={item.text}
-            sentAt={item.sentAt}
-            deliveredAt={item.deliveredAt}
-            trigger={item.trigger}
-            statut={item.statut}
-            isMe={item.isMe}
-          />
-        )}
-      />
+      {/* Messages ou indicateur de chargement */}
+      {chargement ? (
+        <View style={styles.centrer}>
+          <ActivityIndicator size="large" color={COLORS.violet} />
+          <Text style={styles.texteChargement}>Chargement des messages...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={messages}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.liste}
+          renderItem={({ item }) => (
+            <MessageBubble
+              sender={item.sender}
+              text={item.text}
+              sentAt={item.sentAt}
+              deliveredAt={item.deliveredAt}
+              trigger={item.trigger}
+              statut={item.statut}
+              isMe={item.isMe}
+            />
+          )}
+        />
+      )}
 
       {/* Zone de saisie */}
       <MessageInput
@@ -135,5 +151,15 @@ const styles = StyleSheet.create({
   liste: {
     padding: 16,
     gap: 12,
+  },
+  centrer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  texteChargement: {
+    color: COLORS.texteClair,
+    fontSize: 14,
   },
 });
