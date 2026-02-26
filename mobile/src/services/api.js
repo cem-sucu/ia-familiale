@@ -7,6 +7,11 @@ const BASE_URL = Platform.OS === 'android'
   ? 'http://10.0.2.2:8000'
   : 'https://tqb2dd4b-8000.uks1.devtunnels.ms';
 
+// URL WebSocket (ws:// pour Android, wss:// pour iOS via tunnel)
+export const WS_BASE = Platform.OS === 'android'
+  ? 'ws://10.0.2.2:8000'
+  : 'wss://tqb2dd4b-8000.uks1.devtunnels.ms';
+
 // ─── Fonction utilitaire ──────────────────────────────────────────────────────
 async function appel(method, route, body = null) {
   const options = {

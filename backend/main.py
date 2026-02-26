@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import get_connexion, initialiser_db
@@ -12,7 +12,6 @@ from models import Membre, MembreCreation, MembreEtat, Message, MessageEnvoi
 
 app = FastAPI(title="IA Familiale API", version="0.1.0")
 
-# Autorise l'app mobile à appeler le serveur (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,20 +19,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Quand l'utilisateur passe à cet état → on déclenche ce trigger
 DECLENCHEMENTS = {
     "en_route":     "depart_travail",
     "a_la_maison":  "arrivee_maison",
 }
+
+# Connexions WebSocket actives : membre_id → WebSocket
+connexions: dict[str, WebSocket] = {}
 
 
 # ─── Démarrage ───────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 def startup():
-    """Initialise la base de données au démarrage du serveur."""
     initialiser_db()
     print("✅ Serveur IA Familiale démarré !")
+
+
+# ─── WebSocket ────────────────────────────────────────────────────────────────
+
+@app.websocket("/ws/{membre_id}")
+async def websocket_endpoint(websocket: WebSocket, membre_id: str):
+    """Ouvre un canal temps réel pour un membre."""
+    await websocket.accept()
+    connexions[membre_id] = websocket
+    print(f"🔌 {membre_id} connecté via WebSocket")
+    try:
+        while True:
+            # Garde la connexion ouverte (le client envoie des pings)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        connexions.pop(membre_id, None)
+        print(f"🔌 {membre_id} déconnecté")
+
+
+async def notifier(membre_id: str, data: dict):
+    """Pousse des données en temps réel vers un membre connecté."""
+    ws = connexions.get(membre_id)
+    if ws:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            connexions.pop(membre_id, None)
 
 
 # ─── Route de test ───────────────────────────────────────────────────────────
@@ -47,7 +74,6 @@ def accueil():
 
 @app.get("/membres", response_model=list[Membre])
 def lister_membres():
-    """Retourne tous les membres de la famille."""
     conn = get_connexion()
     membres = conn.execute("SELECT * FROM membres").fetchall()
     conn.close()
@@ -55,7 +81,6 @@ def lister_membres():
 
 
 def envoyer_push(push_token: str, expediteur: str, texte: str):
-    """Envoie une notification push via l'API Expo."""
     try:
         requests.post(
             'https://exp.host/--/api/v2/push/send',
@@ -73,7 +98,6 @@ def envoyer_push(push_token: str, expediteur: str, texte: str):
 
 @app.post("/membres/{membre_id}/token")
 def sauvegarder_token(membre_id: str, data: dict):
-    """Sauvegarde le push token du téléphone d'un membre."""
     conn = get_connexion()
     conn.execute(
         "UPDATE membres SET push_token = ? WHERE id = ?",
@@ -86,7 +110,6 @@ def sauvegarder_token(membre_id: str, data: dict):
 
 @app.post("/membres", response_model=Membre)
 def creer_membre(data: MembreCreation):
-    """Crée un nouveau membre de la famille."""
     conn = get_connexion()
     try:
         conn.execute(
@@ -102,14 +125,14 @@ def creer_membre(data: MembreCreation):
 
 
 @app.post("/membres/{membre_id}/etat")
-def changer_etat(membre_id: str, data: MembreEtat):
+async def changer_etat(membre_id: str, data: MembreEtat):
     """
-    Change l'état d'un membre (ex: 'a_la_maison').
-    Déclenche automatiquement la livraison des messages en attente.
+    Change l'état d'un membre.
+    Déclenche la livraison des messages en attente
+    et notifie le membre via WebSocket.
     """
     conn = get_connexion()
 
-    # Vérifier que le membre existe
     membre = conn.execute(
         "SELECT * FROM membres WHERE id = ?", (membre_id,)
     ).fetchone()
@@ -117,13 +140,11 @@ def changer_etat(membre_id: str, data: MembreEtat):
         conn.close()
         raise HTTPException(status_code=404, detail="Membre introuvable")
 
-    # Mettre à jour l'état
     conn.execute(
         "UPDATE membres SET etat = ? WHERE id = ?",
         (data.etat, membre_id)
     )
 
-    # Déclencher la livraison des messages en attente
     trigger_a_declencher = DECLENCHEMENTS.get(data.etat)
     messages_livres = 0
 
@@ -139,7 +160,6 @@ def changer_etat(membre_id: str, data: MembreEtat):
         )
         messages_livres = resultat.rowcount
 
-    # Envoie une notification push pour chaque message livré
     if messages_livres > 0 and trigger_a_declencher:
         push_token = dict(membre).get('push_token') if membre else None
         if push_token:
@@ -151,6 +171,9 @@ def changer_etat(membre_id: str, data: MembreEtat):
             ).fetchall()
             for msg in msgs:
                 envoyer_push(push_token, msg['expediteur_id'], msg['texte'])
+
+        # Notifie le membre via WebSocket de recharger ses messages
+        await notifier(membre_id, {"type": "reload"})
 
     conn.commit()
     conn.close()
@@ -165,20 +188,17 @@ def changer_etat(membre_id: str, data: MembreEtat):
 # ─── Messages ─────────────────────────────────────────────────────────────────
 
 @app.post("/messages", response_model=Message)
-def envoyer_message(data: MessageEnvoi):
+async def envoyer_message(data: MessageEnvoi):
     """
-    Envoie un message.
-    S'il est pour 'maintenant', il est livré immédiatement.
-    Sinon, il reste en attente jusqu'au déclencheur.
+    Envoie un message et notifie le destinataire en temps réel via WebSocket.
     """
     conn = get_connexion()
 
     maintenant = datetime.now().strftime("%H:%M")
     message_id = str(uuid.uuid4())
 
-    # Livraison immédiate si trigger = "maintenant"
-    statut   = "livre"    if data.trigger == "maintenant" else "en_attente"
-    livre_a  = maintenant if data.trigger == "maintenant" else None
+    statut  = "livre"    if data.trigger == "maintenant" else "en_attente"
+    livre_a = maintenant if data.trigger == "maintenant" else None
 
     conn.execute(
         """INSERT INTO messages
@@ -190,7 +210,7 @@ def envoyer_message(data: MessageEnvoi):
     conn.commit()
     conn.close()
 
-    return {
+    message = {
         "id":               message_id,
         "expediteur_id":    data.expediteur_id,
         "destinataire_id":  data.destinataire_id,
@@ -201,14 +221,14 @@ def envoyer_message(data: MessageEnvoi):
         "livre_a":          livre_a,
     }
 
+    # Pousse le message en temps réel vers le destinataire
+    await notifier(data.destinataire_id, message)
+
+    return message
+
 
 @app.get("/messages/{destinataire_id}", response_model=list[Message])
 def get_messages(destinataire_id: str, tous: bool = False):
-    """
-    Retourne les messages d'un destinataire.
-    Par défaut : uniquement les messages livrés.
-    Avec ?tous=true : tous les messages (utile pour le mode démo).
-    """
     conn = get_connexion()
 
     if tous:
