@@ -24,6 +24,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "06703348-73dc-4985-a1ec-0f2a2551eda7"
+      }
+    },
+    "owner": "cembey"
   }
 }

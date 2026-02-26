@@ -43,6 +43,12 @@ def initialiser_db():
         )
     """)
 
+    # Ajoute push_token si la colonne n'existe pas encore (migration douce)
+    try:
+        cursor.execute("ALTER TABLE membres ADD COLUMN push_token TEXT")
+    except Exception:
+        pass  # La colonne existe déjà
+
     # Membres de démonstration (insérés uniquement s'ils n'existent pas)
     cursor.execute("""
         INSERT OR IGNORE INTO membres (id, nom, etat)

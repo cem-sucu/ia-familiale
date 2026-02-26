@@ -8,6 +8,7 @@ import { COLORS } from '../constants/colors';
 import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
 import { changerEtat, envoyerMessageAPI, getTousMessages } from '../services/api';
+import { afficherNotification } from '../services/notifications';
 
 // L'identifiant de l'utilisateur courant (en dur pour l'instant)
 const MON_ID = 'moi';
@@ -54,9 +55,20 @@ export default function ChatScreen() {
   async function handleChangerEtat(nouvelEtat) {
     setEtat(nouvelEtat);
     try {
-      await changerEtat(MON_ID, nouvelEtat);
-      // Recharge les messages — certains viennent d'être livrés !
+      const resultat = await changerEtat(MON_ID, nouvelEtat);
+
+      // Recharge les messages pour voir les nouveaux livrés
       await chargerMessages();
+
+      // Affiche une notification locale pour chaque message livré
+      if (resultat.messages_livres > 0) {
+        const messagesLivres = messages.filter(
+          (m) => m.statut === 'en_attente' && !m.isMe
+        );
+        for (const msg of messagesLivres) {
+          await afficherNotification(msg.sender, msg.text);
+        }
+      }
     } catch (erreur) {
       console.error('Erreur changement état :', erreur);
     }

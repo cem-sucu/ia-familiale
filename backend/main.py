@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -51,6 +52,36 @@ def lister_membres():
     membres = conn.execute("SELECT * FROM membres").fetchall()
     conn.close()
     return [dict(m) for m in membres]
+
+
+def envoyer_push(push_token: str, expediteur: str, texte: str):
+    """Envoie une notification push via l'API Expo."""
+    try:
+        requests.post(
+            'https://exp.host/--/api/v2/push/send',
+            json={
+                'to': push_token,
+                'title': f'Message de {expediteur} 💬',
+                'body': texte,
+                'sound': 'default',
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print(f'⚠️ Erreur push notification : {e}')
+
+
+@app.post("/membres/{membre_id}/token")
+def sauvegarder_token(membre_id: str, data: dict):
+    """Sauvegarde le push token du téléphone d'un membre."""
+    conn = get_connexion()
+    conn.execute(
+        "UPDATE membres SET push_token = ? WHERE id = ?",
+        (data['push_token'], membre_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.post("/membres", response_model=Membre)
@@ -107,6 +138,19 @@ def changer_etat(membre_id: str, data: MembreEtat):
             (maintenant, membre_id, trigger_a_declencher)
         )
         messages_livres = resultat.rowcount
+
+    # Envoie une notification push pour chaque message livré
+    if messages_livres > 0 and trigger_a_declencher:
+        push_token = dict(membre).get('push_token') if membre else None
+        if push_token:
+            msgs = conn.execute(
+                """SELECT * FROM messages
+                   WHERE destinataire_id = ? AND trigger = ?
+                   AND statut = 'livre' AND livre_a = ?""",
+                (membre_id, trigger_a_declencher, maintenant)
+            ).fetchall()
+            for msg in msgs:
+                envoyer_push(push_token, msg['expediteur_id'], msg['texte'])
 
     conn.commit()
     conn.close()

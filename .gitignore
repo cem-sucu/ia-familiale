@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Base de données SQLite (données locales)
+backend/famille.db
+
+# Node
+node_modules/
+
+# Expo
+mobile/.expo/
+mobile/dist/

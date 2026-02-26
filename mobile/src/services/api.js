@@ -35,6 +35,11 @@ export function changerEtat(membreId, etat) {
   return appel('POST', `/membres/${membreId}/etat`, { etat });
 }
 
+// Enregistre le push token du téléphone sur le serveur
+export function enregistrerToken(membreId, pushToken) {
+  return appel('POST', `/membres/${membreId}/token`, { push_token: pushToken });
+}
+
 // ─── Messages ─────────────────────────────────────────────────────────────────
 
 // Envoie un message avec un déclencheur
