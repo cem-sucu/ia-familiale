@@ -8,7 +8,7 @@ import MonEtat from '../components/MonEtat';
 import { COLORS } from '../constants/colors';
 import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
-import { changerEtat, envoyerMessageAPI, getMembres, getTousMessages } from '../services/api';
+import { WS_BASE, changerEtat, envoyerMessageAPI, getMembres, getTousMessages } from '../services/api';
 import { afficherNotification } from '../services/notifications';
 
 export default function ChatScreen({ route }) {
@@ -28,6 +28,39 @@ export default function ChatScreen({ route }) {
 
   useEffect(() => {
     chargerTout();
+
+    // ── Connexion WebSocket pour les messages en temps réel ──
+    let intervalle = null;
+    const ws = new WebSocket(`${WS_BASE}/ws/${MON_ID}`);
+
+    ws.onopen = () => {
+      console.log('🔌 WebSocket connecté (temps réel actif)');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'reload') {
+        rafraichirMessages();
+      } else {
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.id)) return prev;
+          return [...prev, adapterMessage(data)];
+        });
+      }
+    };
+
+    ws.onerror = () => {
+      // Le tunnel ne supporte pas WebSocket → fallback en polling toutes les 5s
+      if (!intervalle) {
+        console.log('📡 WebSocket indisponible, passage en polling (5s)...');
+        intervalle = setInterval(rafraichirMessages, 5000);
+      }
+    };
+
+    return () => {
+      ws.close();
+      if (intervalle) clearInterval(intervalle);
+    };
   }, []);
 
   // Quand les membres sont chargés, on sélectionne le premier par défaut
@@ -41,6 +74,7 @@ export default function ChatScreen({ route }) {
     await Promise.all([chargerMessages(), chargerMembres()]);
   }
 
+  // Chargement initial : montre le spinner
   async function chargerMessages() {
     try {
       setChargement(true);
@@ -50,6 +84,16 @@ export default function ChatScreen({ route }) {
       console.error('Impossible de charger les messages :', erreur);
     } finally {
       setChargement(false);
+    }
+  }
+
+  // Rafraîchissement silencieux : pas de spinner, utilisé par polling et WebSocket
+  async function rafraichirMessages() {
+    try {
+      const data = await getTousMessages(MON_ID);
+      setMessages(data.map(adapterMessage));
+    } catch (erreur) {
+      console.error('Impossible de rafraîchir les messages :', erreur);
     }
   }
 
@@ -100,7 +144,7 @@ export default function ChatScreen({ route }) {
 
     try {
       await envoyerMessageAPI(MON_ID, destinataireId, texte, trigger);
-      await chargerMessages();
+      await rafraichirMessages();
     } catch (erreur) {
       console.error('Erreur envoi message :', erreur);
     }
