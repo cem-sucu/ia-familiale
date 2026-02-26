@@ -1,35 +1,50 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import FamilleModal from '../components/FamilleModal';
 import MessageBubble from '../components/MessageBubble';
 import MessageInput from '../components/MessageInput';
 import MonEtat from '../components/MonEtat';
 import { COLORS } from '../constants/colors';
 import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
-import { changerEtat, envoyerMessageAPI, getTousMessages } from '../services/api';
+import { changerEtat, envoyerMessageAPI, getMembres, getTousMessages } from '../services/api';
 import { afficherNotification } from '../services/notifications';
 
-// L'identifiant de l'utilisateur courant (en dur pour l'instant)
-const MON_ID = 'moi';
+export default function ChatScreen({ route }) {
+  const { membreId: MON_ID, membreNom } = route.params;
 
-export default function ChatScreen() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
-  const [trigger, setTrigger] = useState(TRIGGER_DEFAUT);
-  const [etat, setEtat] = useState(ETAT_DEFAUT);
-  const [chargement, setChargement] = useState(true);
+  const [messages, setMessages]         = useState([]);
+  const [input, setInput]               = useState('');
+  const [trigger, setTrigger]           = useState(TRIGGER_DEFAUT);
+  const [etat, setEtat]                 = useState(ETAT_DEFAUT);
+  const [chargement, setChargement]     = useState(true);
+  const [membres, setMembres]           = useState([]);
+  const [destinataireId, setDestinataire] = useState(null);
+  const [voirFamille, setVoirFamille]   = useState(false);
 
-  // Charge les messages depuis le serveur au démarrage
+  // Les autres membres (tout le monde sauf moi) → pour envoyer et pour le modal
+  const autresMembres = membres.filter(m => m.id !== MON_ID);
+
   useEffect(() => {
-    chargerMessages();
+    chargerTout();
   }, []);
+
+  // Quand les membres sont chargés, on sélectionne le premier par défaut
+  useEffect(() => {
+    if (autresMembres.length > 0 && !destinataireId) {
+      setDestinataire(autresMembres[0].id);
+    }
+  }, [membres]);
+
+  async function chargerTout() {
+    await Promise.all([chargerMessages(), chargerMembres()]);
+  }
 
   async function chargerMessages() {
     try {
       setChargement(true);
       const data = await getTousMessages(MON_ID);
-      // On adapte le format du serveur au format de nos composants
       setMessages(data.map(adapterMessage));
     } catch (erreur) {
       console.error('Impossible de charger les messages :', erreur);
@@ -38,7 +53,15 @@ export default function ChatScreen() {
     }
   }
 
-  // Convertit le format serveur → format composants
+  async function chargerMembres() {
+    try {
+      const data = await getMembres();
+      setMembres(data);
+    } catch (erreur) {
+      console.error('Impossible de charger les membres :', erreur);
+    }
+  }
+
   function adapterMessage(msg) {
     return {
       id:          msg.id,
@@ -56,15 +79,9 @@ export default function ChatScreen() {
     setEtat(nouvelEtat);
     try {
       const resultat = await changerEtat(MON_ID, nouvelEtat);
-
-      // Recharge les messages pour voir les nouveaux livrés
       await chargerMessages();
-
-      // Affiche une notification locale pour chaque message livré
       if (resultat.messages_livres > 0) {
-        const messagesLivres = messages.filter(
-          (m) => m.statut === 'en_attente' && !m.isMe
-        );
+        const messagesLivres = messages.filter(m => m.statut === 'en_attente' && !m.isMe);
         for (const msg of messagesLivres) {
           await afficherNotification(msg.sender, msg.text);
         }
@@ -75,18 +92,24 @@ export default function ChatScreen() {
   }
 
   async function envoyerMessage() {
-    if (input.trim() === '') return;
+    if (input.trim() === '' || !destinataireId) return;
 
     const texte = input;
     setInput('');
     setTrigger(TRIGGER_DEFAUT);
 
     try {
-      await envoyerMessageAPI(MON_ID, MON_ID, texte, trigger);
+      await envoyerMessageAPI(MON_ID, destinataireId, texte, trigger);
       await chargerMessages();
     } catch (erreur) {
       console.error('Erreur envoi message :', erreur);
     }
+  }
+
+  function ouvrirFamille() {
+    // Rafraîchit les états avant d'ouvrir le modal
+    chargerMembres();
+    setVoirFamille(true);
   }
 
   return (
@@ -94,8 +117,16 @@ export default function ChatScreen() {
 
       {/* En-tête */}
       <View style={styles.header}>
-        <Text style={styles.headerTitre}>Famille 👨‍👩‍👦</Text>
-        <Text style={styles.headerSousTitre}>3 membres connectés</Text>
+        <View style={styles.headerContenu}>
+          <View>
+            <Text style={styles.headerTitre}>Famille 👨‍👩‍👦</Text>
+            <Text style={styles.headerSousTitre}>Connecté : {membreNom}</Text>
+          </View>
+          {/* Bouton "voir la famille" */}
+          <TouchableOpacity style={styles.boutonFamille} onPress={ouvrirFamille}>
+            <Text style={styles.boutonFamilleTexte}>👁 Famille</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Barre d'état */}
@@ -133,6 +164,16 @@ export default function ChatScreen() {
         onEnvoyer={envoyerMessage}
         trigger={trigger}
         onTriggerChange={setTrigger}
+        autresMembres={autresMembres}
+        destinataireId={destinataireId}
+        onDestinataireChange={setDestinataire}
+      />
+
+      {/* Modal famille */}
+      <FamilleModal
+        visible={voirFamille}
+        membres={membres}
+        onFermer={() => setVoirFamille(false)}
       />
 
     </SafeAreaView>
@@ -148,7 +189,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.violet,
     paddingVertical: 16,
     paddingHorizontal: 20,
+  },
+  headerContenu: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
   headerTitre: {
     color: COLORS.blanc,
@@ -159,6 +204,17 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.75)',
     fontSize: 12,
     marginTop: 2,
+  },
+  boutonFamille: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  boutonFamilleTexte: {
+    color: COLORS.blanc,
+    fontWeight: '600',
+    fontSize: 13,
   },
   liste: {
     padding: 16,

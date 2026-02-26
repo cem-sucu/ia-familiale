@@ -2,18 +2,40 @@ import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 
 import { COLORS } from '../constants/colors';
 import { TRIGGERS } from '../constants/triggers';
 
-// La barre de saisie avec sélection du déclencheur
-// Props :
-//   value           → texte actuellement écrit
-//   onChange        → appelé quand l'utilisateur tape
-//   onEnvoyer       → appelé quand l'utilisateur appuie sur Envoyer
-//   trigger         → id du déclencheur sélectionné
-//   onTriggerChange → appelé quand l'utilisateur change de déclencheur
-export default function MessageInput({ value, onChange, onEnvoyer, trigger, onTriggerChange }) {
+export default function MessageInput({
+  value, onChange, onEnvoyer,
+  trigger, onTriggerChange,
+  autresMembres, destinataireId, onDestinataireChange,
+}) {
   return (
     <View style={styles.container}>
 
-      {/* Ligne 1 : chips de sélection du déclencheur */}
+      {/* Ligne 1 : sélection du destinataire "À :" */}
+      {autresMembres.length > 0 && (
+        <View style={styles.destinataireLigne}>
+          <Text style={styles.destinataireLabel}>À :</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={styles.destinataireChips}>
+              {autresMembres.map(m => {
+                const estSelectionne = destinataireId === m.id;
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[styles.destChip, estSelectionne && styles.destChipActif]}
+                    onPress={() => onDestinataireChange(m.id)}
+                  >
+                    <Text style={[styles.destChipTexte, estSelectionne && styles.destChipTexteActif]}>
+                      {m.nom}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Ligne 2 : chips de sélection du déclencheur */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -36,7 +58,7 @@ export default function MessageInput({ value, onChange, onEnvoyer, trigger, onTr
         })}
       </ScrollView>
 
-      {/* Ligne 2 : zone de texte + bouton envoyer */}
+      {/* Ligne 3 : zone de texte + bouton envoyer */}
       <View style={styles.inputLigne}>
         <TextInput
           style={styles.input}
@@ -63,9 +85,47 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.blanc,
     paddingBottom: 8,
   },
-  // Chips
-  chipsContainer: {
+  // Destinataire
+  destinataireLigne: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
     paddingTop: 10,
+    gap: 8,
+  },
+  destinataireLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.texteClair,
+  },
+  destinataireChips: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  destChip: {
+    borderWidth: 1.5,
+    borderColor: COLORS.bordure,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    backgroundColor: COLORS.blanc,
+  },
+  destChipActif: {
+    borderColor: COLORS.violet,
+    backgroundColor: COLORS.violet,
+  },
+  destChipTexte: {
+    fontSize: 13,
+    color: COLORS.texte,
+    fontWeight: '500',
+  },
+  destChipTexteActif: {
+    color: COLORS.blanc,
+    fontWeight: '600',
+  },
+  // Triggers
+  chipsContainer: {
+    paddingTop: 8,
   },
   chipsContent: {
     paddingHorizontal: 12,

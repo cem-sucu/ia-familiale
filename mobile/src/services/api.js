@@ -1,7 +1,11 @@
 // ─── Configuration ────────────────────────────────────────────────────────────
-// L'adresse IP de ton PC sur le WiFi
-// Si ça ne marche pas, change cette IP par celle de ton PC (ipconfig dans le terminal)
-const BASE_URL = 'https://tqb2dd4b-8000.uks1.devtunnels.ms';
+import { Platform } from 'react-native';
+
+// L'émulateur Android accède au PC hôte via 10.0.2.2 (pas besoin de tunnel)
+// L'iPhone passe par le tunnel Dev Tunnels
+const BASE_URL = Platform.OS === 'android'
+  ? 'http://10.0.2.2:8000'
+  : 'https://tqb2dd4b-8000.uks1.devtunnels.ms';
 
 // ─── Fonction utilitaire ──────────────────────────────────────────────────────
 async function appel(method, route, body = null) {
