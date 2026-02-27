@@ -32,6 +32,11 @@ class MessageEnvoi(BaseModel):
     trigger:         str = "maintenant"  # déclencheur de livraison
 
 
+class MessageModification(BaseModel):
+    """Ce qu'on envoie pour modifier le texte d'un message en attente."""
+    texte: str
+
+
 class Message(BaseModel):
     """Ce que le serveur retourne pour un message."""
     id:               str
@@ -39,6 +44,6 @@ class Message(BaseModel):
     destinataire_id:  str
     texte:            str
     trigger:          str
-    statut:           str           # "en_attente" ou "livre"
+    statut:           str           # "en_attente", "livre" ou "annule"
     envoye_a:         str
     livre_a:          Optional[str] # null si pas encore livré

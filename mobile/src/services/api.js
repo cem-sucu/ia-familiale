@@ -70,3 +70,13 @@ export function getMessages(destinataireId) {
 export function getTousMessages(destinataireId) {
   return appel('GET', `/messages/${destinataireId}?tous=true`);
 }
+
+// Modifie le texte d'un message encore en attente
+export function modifierMessage(messageId, texte) {
+  return appel('PATCH', `/messages/${messageId}`, { texte });
+}
+
+// Annule un message en attente — il ne sera jamais livré
+export function annulerMessage(messageId) {
+  return appel('PATCH', `/messages/${messageId}/annuler`);
+}

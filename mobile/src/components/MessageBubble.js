@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../constants/colors';
 import { TRIGGERS } from '../constants/triggers';
 
@@ -14,9 +14,10 @@ function formaterDate(isoStr) {
   return timePart ? timePart.substring(0, 5) : '';
 }
 
-export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigger, statut, isMe }) {
+export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigger, statut, isMe, onModifier, onAnnuler }) {
   const estEnAttente = statut === 'en_attente';
-  const estDiffere = deliveredAt && sentAt !== deliveredAt;
+  const estAnnule   = statut === 'annule';
+  const estDiffere  = deliveredAt && sentAt !== deliveredAt;
   const infoDeclencheur = getTrigger(trigger);
 
   return (
@@ -24,6 +25,7 @@ export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigg
       styles.bulle,
       isMe ? styles.bulleNous : styles.bulleEux,
       estEnAttente && styles.bulleEnAttente,
+      estAnnule    && styles.bulleAnnule,
     ]}>
 
       {/* Nom de l'expéditeur */}
@@ -34,7 +36,7 @@ export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigg
       )}
 
       {/* Badge déclencheur */}
-      {trigger !== 'maintenant' && infoDeclencheur && (
+      {trigger !== 'maintenant' && infoDeclencheur && !estAnnule && (
         <View style={[styles.badge, isMe && !estEnAttente && styles.badgeNous]}>
           <Text style={[styles.badgeTexte, isMe && !estEnAttente && styles.badgeTexteNous]}>
             {infoDeclencheur.icon} {infoDeclencheur.label}
@@ -43,13 +45,19 @@ export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigg
       )}
 
       {/* Texte du message */}
-      <Text style={[styles.texte, isMe && !estEnAttente && styles.texteNous]}>
+      <Text style={[
+        styles.texte,
+        isMe && !estEnAttente && !estAnnule && styles.texteNous,
+        estAnnule && styles.texteAnnule,
+      ]}>
         {text}
       </Text>
 
       {/* Horodatage ou indicateur d'attente */}
       <View style={styles.horodatage}>
-        {estEnAttente ? (
+        {estAnnule ? (
+          <Text style={styles.annule}>Message annulé</Text>
+        ) : estEnAttente ? (
           <Text style={styles.enAttente}>⏳ En attente de livraison...</Text>
         ) : (
           <>
@@ -62,6 +70,18 @@ export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigg
           </>
         )}
       </View>
+
+      {/* Boutons modifier / annuler — uniquement sur mes messages en attente */}
+      {isMe && estEnAttente && (
+        <View style={styles.actions}>
+          <TouchableOpacity style={styles.boutonAction} onPress={() => onModifier && onModifier()}>
+            <Text style={styles.boutonActionTexte}>✏️ Modifier</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.boutonAction, styles.boutonAnnuler]} onPress={() => onAnnuler && onAnnuler()}>
+            <Text style={[styles.boutonActionTexte, styles.boutonAnnulerTexte]}>✕ Annuler</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
     </View>
   );
@@ -147,5 +167,45 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#E67E22',
     fontStyle: 'italic',
+  },
+  // Message annulé
+  bulleAnnule: {
+    backgroundColor: '#F5F5F5',
+    borderWidth: 1,
+    borderColor: '#CCCCCC',
+    borderStyle: 'solid',
+    opacity: 0.7,
+  },
+  texteAnnule: {
+    color: '#AAAAAA',
+    textDecorationLine: 'line-through',
+  },
+  annule: {
+    fontSize: 11,
+    color: '#AAAAAA',
+    fontStyle: 'italic',
+  },
+  // Boutons modifier / annuler
+  actions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  boutonAction: {
+    backgroundColor: 'rgba(108,99,255,0.12)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  boutonAnnuler: {
+    backgroundColor: 'rgba(231,76,60,0.1)',
+  },
+  boutonActionTexte: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.violet,
+  },
+  boutonAnnulerTexte: {
+    color: '#E74C3C',
   },
 });

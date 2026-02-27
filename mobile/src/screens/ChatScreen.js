@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FamilleModal from '../components/FamilleModal';
 import MessageBubble from '../components/MessageBubble';
@@ -8,7 +8,7 @@ import MonEtat from '../components/MonEtat';
 import { COLORS } from '../constants/colors';
 import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
-import { WS_BASE, changerEtat, envoyerMessageAPI, getMembres, getTousMessages } from '../services/api';
+import { WS_BASE, annulerMessage, changerEtat, envoyerMessageAPI, getMembres, getTousMessages, modifierMessage } from '../services/api';
 import { afficherNotification } from '../services/notifications';
 
 // ── Séparateurs de date (style WhatsApp) ──────────────────────────────────────
@@ -60,6 +60,7 @@ export default function ChatScreen({ route }) {
   const [membres, setMembres]           = useState([]);
   const [destinataireId, setDestinataire] = useState(null);
   const [voirFamille, setVoirFamille]   = useState(false);
+  const [messageEnEdition, setMessageEnEdition] = useState(null); // { id, texteOriginal }
 
   const flatListRef = useRef(null);
 
@@ -178,12 +179,56 @@ export default function ChatScreen({ route }) {
     setInput('');
     setTrigger(TRIGGER_DEFAUT);
 
+    // Mode édition → modifier le message existant
+    if (messageEnEdition) {
+      setMessageEnEdition(null);
+      try {
+        await modifierMessage(messageEnEdition.id, texte);
+        await rafraichirMessages();
+      } catch (erreur) {
+        console.error('Erreur modification message :', erreur);
+      }
+      return;
+    }
+
     try {
       await envoyerMessageAPI(MON_ID, destinataireId, texte, trigger);
       await rafraichirMessages();
     } catch (erreur) {
       console.error('Erreur envoi message :', erreur);
     }
+  }
+
+  function handleModifierMessage(id, texteActuel) {
+    setMessageEnEdition({ id, texteOriginal: texteActuel });
+    setInput(texteActuel);
+  }
+
+  function handleAnnulerMessage(id) {
+    Alert.alert(
+      'Annuler ce message ?',
+      'Le message ne sera jamais livré.',
+      [
+        { text: 'Retour', style: 'cancel' },
+        {
+          text: 'Annuler le message',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await annulerMessage(id);
+              await rafraichirMessages();
+            } catch (erreur) {
+              console.error('Erreur annulation message :', erreur);
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  function annulerEdition() {
+    setMessageEnEdition(null);
+    setInput('');
   }
 
   function ouvrirFamille() {
@@ -242,10 +287,22 @@ export default function ChatScreen({ route }) {
                 trigger={item.trigger}
                 statut={item.statut}
                 isMe={item.isMe}
+                onModifier={() => handleModifierMessage(item.id, item.text)}
+                onAnnuler={() => handleAnnulerMessage(item.id)}
               />
             );
           }}
         />
+      )}
+
+      {/* Bannière mode édition */}
+      {messageEnEdition && (
+        <View style={styles.banniereEdition}>
+          <Text style={styles.banniereEditionTexte}>✏️ Modification en cours</Text>
+          <TouchableOpacity onPress={annulerEdition}>
+            <Text style={styles.banniereEditionAnnuler}>✕ Annuler</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Zone de saisie */}
@@ -320,6 +377,26 @@ const styles = StyleSheet.create({
   texteChargement: {
     color: COLORS.texteClair,
     fontSize: 14,
+  },
+  banniereEdition: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(108,99,255,0.1)',
+    borderTopWidth: 1,
+    borderTopColor: COLORS.violet,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  banniereEditionTexte: {
+    fontSize: 13,
+    color: COLORS.violet,
+    fontWeight: '600',
+  },
+  banniereEditionAnnuler: {
+    fontSize: 13,
+    color: COLORS.violet,
+    fontWeight: '600',
   },
   separateur: {
     alignItems: 'center',

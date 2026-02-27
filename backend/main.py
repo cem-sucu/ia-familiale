@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import get_connexion, initialiser_db
-from models import Membre, MembreCreation, MembreEtat, Message, MessageEnvoi
+from models import Membre, MembreCreation, MembreEtat, Message, MessageEnvoi, MessageModification
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -238,6 +238,52 @@ async def envoyer_message(data: MessageEnvoi):
     await notifier(data.destinataire_id, message)
 
     return message
+
+
+@app.patch("/messages/{message_id}")
+async def modifier_message(message_id: str, data: MessageModification):
+    """Modifie le texte d'un message encore en attente."""
+    conn = get_connexion()
+    msg = conn.execute(
+        "SELECT * FROM messages WHERE id = ?", (message_id,)
+    ).fetchone()
+
+    if not msg or msg['statut'] != 'en_attente':
+        conn.close()
+        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
+
+    conn.execute(
+        "UPDATE messages SET texte = ? WHERE id = ?",
+        (data.texte, message_id)
+    )
+    conn.commit()
+    conn.close()
+
+    await notifier(msg['expediteur_id'], {"type": "reload"})
+    return {"ok": True}
+
+
+@app.patch("/messages/{message_id}/annuler")
+async def annuler_message(message_id: str):
+    """Annule un message encore en attente — il ne sera jamais livré."""
+    conn = get_connexion()
+    msg = conn.execute(
+        "SELECT * FROM messages WHERE id = ?", (message_id,)
+    ).fetchone()
+
+    if not msg or msg['statut'] != 'en_attente':
+        conn.close()
+        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
+
+    conn.execute(
+        "UPDATE messages SET statut = 'annule' WHERE id = ?",
+        (message_id,)
+    )
+    conn.commit()
+    conn.close()
+
+    await notifier(msg['expediteur_id'], {"type": "reload"})
+    return {"ok": True}
 
 
 @app.get("/messages/{destinataire_id}", response_model=list[Message])
