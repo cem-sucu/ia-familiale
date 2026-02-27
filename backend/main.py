@@ -169,20 +169,27 @@ async def changer_etat(membre_id: str, data: MembreEtat):
     conn.close()
 
     if messages_livres > 0 and trigger_a_declencher:
+        conn2 = get_connexion()
+        msgs = conn2.execute(
+            """SELECT * FROM messages
+               WHERE destinataire_id = ? AND trigger = ?
+               AND statut = 'livre' AND livre_a = ?""",
+            (membre_id, trigger_a_declencher, maintenant)
+        ).fetchall()
+        conn2.close()
+
+        # Push notification vers le destinataire
         push_token = dict(membre).get('push_token') if membre else None
         if push_token:
-            conn2 = get_connexion()
-            msgs = conn2.execute(
-                """SELECT * FROM messages
-                   WHERE destinataire_id = ? AND trigger = ?
-                   AND statut = 'livre' AND livre_a = ?""",
-                (membre_id, trigger_a_declencher, maintenant)
-            ).fetchall()
-            conn2.close()
             for msg in msgs:
                 envoyer_push(push_token, msg['expediteur_id'], msg['texte'])
 
+        # Notifie le destinataire (Cem) : recharge ses messages
         await notifier(membre_id, {"type": "reload"})
+
+        # Notifie aussi les expéditeurs : leur message passe de "en attente" à "livré"
+        for exp_id in {msg['expediteur_id'] for msg in msgs}:
+            await notifier(exp_id, {"type": "reload"})
 
     return {
         "etat": data.etat,
