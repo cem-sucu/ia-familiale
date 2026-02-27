@@ -6,6 +6,14 @@ function getTrigger(id) {
   return TRIGGERS.find((t) => t.id === id);
 }
 
+// Extrait juste l'heure depuis "2026-02-27T14:32" → "14:32"
+// (pas de new Date() pour éviter les problèmes Hermes/React Native)
+function formaterDate(isoStr) {
+  if (!isoStr) return '';
+  const timePart = isoStr.split('T')[1];
+  return timePart ? timePart.substring(0, 5) : '';
+}
+
 export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigger, statut, isMe }) {
   const estEnAttente = statut === 'en_attente';
   const estDiffere = deliveredAt && sentAt !== deliveredAt;
@@ -46,10 +54,10 @@ export default function MessageBubble({ sender, text, sentAt, deliveredAt, trigg
         ) : (
           <>
             <Text style={[styles.heure, isMe && styles.heureNous]}>
-              Envoyé {sentAt}
+              Envoyé {formaterDate(sentAt)}
             </Text>
             {estDiffere && (
-              <Text style={styles.delai}> · Reçu {deliveredAt} ⏰</Text>
+              <Text style={styles.delai}> · Reçu {formaterDate(deliveredAt)} ⏰</Text>
             )}
           </>
         )}

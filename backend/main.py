@@ -1,7 +1,11 @@
+import logging
 import uuid
 from datetime import datetime
 
 import requests
+
+# Désactive les logs d'accès HTTP (GET /... 200 OK) — trop verbeux
+logging.getLogger("uvicorn.access").disabled = True
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -149,7 +153,7 @@ async def changer_etat(membre_id: str, data: MembreEtat):
     messages_livres = 0
 
     if trigger_a_declencher:
-        maintenant = datetime.now().strftime("%H:%M")
+        maintenant = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         resultat = conn.execute(
             """UPDATE messages
                SET statut = 'livre', livre_a = ?
@@ -160,23 +164,25 @@ async def changer_etat(membre_id: str, data: MembreEtat):
         )
         messages_livres = resultat.rowcount
 
+    # Commit AVANT de notifier — sinon le client lirait des données pas encore commitées
+    conn.commit()
+    conn.close()
+
     if messages_livres > 0 and trigger_a_declencher:
         push_token = dict(membre).get('push_token') if membre else None
         if push_token:
-            msgs = conn.execute(
+            conn2 = get_connexion()
+            msgs = conn2.execute(
                 """SELECT * FROM messages
                    WHERE destinataire_id = ? AND trigger = ?
                    AND statut = 'livre' AND livre_a = ?""",
                 (membre_id, trigger_a_declencher, maintenant)
             ).fetchall()
+            conn2.close()
             for msg in msgs:
                 envoyer_push(push_token, msg['expediteur_id'], msg['texte'])
 
-        # Notifie le membre via WebSocket de recharger ses messages
         await notifier(membre_id, {"type": "reload"})
-
-    conn.commit()
-    conn.close()
 
     return {
         "etat": data.etat,
@@ -194,7 +200,7 @@ async def envoyer_message(data: MessageEnvoi):
     """
     conn = get_connexion()
 
-    maintenant = datetime.now().strftime("%H:%M")
+    maintenant = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     message_id = str(uuid.uuid4())
 
     statut  = "livre"    if data.trigger == "maintenant" else "en_attente"
@@ -232,9 +238,14 @@ def get_messages(destinataire_id: str, tous: bool = False):
     conn = get_connexion()
 
     if tous:
+        # Messages envoyés par moi (tous statuts) OU reçus ET déjà livrés
+        # → le destinataire ne voit pas les messages "en_attente" avant livraison
         messages = conn.execute(
-            "SELECT * FROM messages WHERE destinataire_id = ? ORDER BY envoye_a",
-            (destinataire_id,)
+            """SELECT * FROM messages
+               WHERE expediteur_id = ?
+                  OR (destinataire_id = ? AND statut = 'livre')
+               ORDER BY envoye_a""",
+            (destinataire_id, destinataire_id)
         ).fetchall()
     else:
         messages = conn.execute(

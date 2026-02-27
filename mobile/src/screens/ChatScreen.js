@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FamilleModal from '../components/FamilleModal';
@@ -10,6 +10,44 @@ import { ETAT_DEFAUT } from '../constants/etats';
 import { TRIGGER_DEFAUT } from '../constants/triggers';
 import { WS_BASE, changerEtat, envoyerMessageAPI, getMembres, getTousMessages } from '../services/api';
 import { afficherNotification } from '../services/notifications';
+
+// ── Séparateurs de date (style WhatsApp) ──────────────────────────────────────
+
+function parseDateLocale(isoStr) {
+  if (!isoStr) return null;
+  const [y, m, d] = isoStr.split('T')[0].split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formaterSeparateur(isoStr) {
+  const date = parseDateLocale(isoStr);
+  if (!date) return '';
+  const maintenant = new Date();
+  const auj  = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate());
+  const hier = new Date(auj); hier.setDate(hier.getDate() - 1);
+  if (date >= auj)  return "Aujourd'hui";
+  if (date >= hier) return 'Hier';
+  const opts = { weekday: 'long', day: 'numeric', month: 'long' };
+  if (date.getFullYear() !== maintenant.getFullYear()) opts.year = 'numeric';
+  const label = date.toLocaleDateString('fr-FR', opts);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function ajouterSeparateurs(msgs) {
+  const result = [];
+  let derniereDate = null;
+  for (const msg of msgs) {
+    const dateStr = msg.sentAt ? msg.sentAt.split('T')[0] : null;
+    if (dateStr && dateStr !== derniereDate) {
+      result.push({ type: 'separateur', id: `sep-${msg.id}`, sentAt: msg.sentAt });
+      derniereDate = dateStr;
+    }
+    result.push({ ...msg, type: 'message' });
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function ChatScreen({ route }) {
   const { membreId: MON_ID, membreNom } = route.params;
@@ -23,6 +61,8 @@ export default function ChatScreen({ route }) {
   const [destinataireId, setDestinataire] = useState(null);
   const [voirFamille, setVoirFamille]   = useState(false);
 
+  const flatListRef = useRef(null);
+
   // Les autres membres (tout le monde sauf moi) → pour envoyer et pour le modal
   const autresMembres = membres.filter(m => m.id !== MON_ID);
 
@@ -33,15 +73,13 @@ export default function ChatScreen({ route }) {
     let intervalle = null;
     const ws = new WebSocket(`${WS_BASE}/ws/${MON_ID}`);
 
-    ws.onopen = () => {
-      console.log('🔌 WebSocket connecté (temps réel actif)');
-    };
-
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'reload') {
         rafraichirMessages();
       } else {
+        // Ignorer les messages en attente : le destinataire ne les voit qu'à la livraison (reload)
+        if (data.statut === 'en_attente') return;
         setMessages(prev => {
           if (prev.some(m => m.id === data.id)) return prev;
           return [...prev, adapterMessage(data)];
@@ -50,9 +88,7 @@ export default function ChatScreen({ route }) {
     };
 
     ws.onerror = () => {
-      // Le tunnel ne supporte pas WebSocket → fallback en polling toutes les 5s
       if (!intervalle) {
-        console.log('📡 WebSocket indisponible, passage en polling (5s)...');
         intervalle = setInterval(rafraichirMessages, 5000);
       }
     };
@@ -123,7 +159,7 @@ export default function ChatScreen({ route }) {
     setEtat(nouvelEtat);
     try {
       const resultat = await changerEtat(MON_ID, nouvelEtat);
-      await chargerMessages();
+      await rafraichirMessages();
       if (resultat.messages_livres > 0) {
         const messagesLivres = messages.filter(m => m.statut === 'en_attente' && !m.isMe);
         for (const msg of messagesLivres) {
@@ -184,20 +220,31 @@ export default function ChatScreen({ route }) {
         </View>
       ) : (
         <FlatList
-          data={messages}
+          ref={flatListRef}
+          data={ajouterSeparateurs(messages)}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.liste}
-          renderItem={({ item }) => (
-            <MessageBubble
-              sender={item.sender}
-              text={item.text}
-              sentAt={item.sentAt}
-              deliveredAt={item.deliveredAt}
-              trigger={item.trigger}
-              statut={item.statut}
-              isMe={item.isMe}
-            />
-          )}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          renderItem={({ item }) => {
+            if (item.type === 'separateur') {
+              return (
+                <View style={styles.separateur}>
+                  <Text style={styles.separateurTexte}>{formaterSeparateur(item.sentAt)}</Text>
+                </View>
+              );
+            }
+            return (
+              <MessageBubble
+                sender={item.sender}
+                text={item.text}
+                sentAt={item.sentAt}
+                deliveredAt={item.deliveredAt}
+                trigger={item.trigger}
+                statut={item.statut}
+                isMe={item.isMe}
+              />
+            );
+          }}
         />
       )}
 
@@ -273,5 +320,19 @@ const styles = StyleSheet.create({
   texteChargement: {
     color: COLORS.texteClair,
     fontSize: 14,
+  },
+  separateur: {
+    alignItems: 'center',
+    marginVertical: 4,
+  },
+  separateurTexte: {
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    color: COLORS.texteClair,
+    fontSize: 12,
+    fontWeight: '600',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
 });
