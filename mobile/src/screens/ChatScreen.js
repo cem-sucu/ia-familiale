@@ -50,7 +50,7 @@ function ajouterSeparateurs(msgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function ChatScreen({ route }) {
-  const { membreId: MON_ID, membreNom } = route.params;
+  const { membreId: MON_ID, membreNom, circleId } = route.params;
 
   const [messages, setMessages]         = useState([]);
   const [input, setInput]               = useState('');
@@ -192,7 +192,7 @@ export default function ChatScreen({ route }) {
     }
 
     try {
-      await envoyerMessageAPI(MON_ID, destinataireId, texte, trigger);
+      await envoyerMessageAPI(destinataireId, texte, trigger, circleId);
       await rafraichirMessages();
     } catch (erreur) {
       console.error('Erreur envoi message :', erreur);

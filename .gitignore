@@ -13,3 +13,7 @@ node_modules/
 # Expo
 mobile/.expo/
 mobile/dist/
+
+# Variables d'environnement (NE JAMAIS committer)
+.env
+backend/.env

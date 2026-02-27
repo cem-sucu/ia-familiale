@@ -1,20 +1,31 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-import requests
+import httpx
 
-# Désactive les logs d'accès HTTP (GET /... 200 OK) — trop verbeux
+# Désactive les logs d'accès HTTP — trop verbeux
 logging.getLogger("uvicorn.access").disabled = True
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import get_connexion, initialiser_db
-from models import Membre, MembreCreation, MembreEtat, Message, MessageEnvoi, MessageModification
+from auth import get_current_user
+from database import fermer_pool, get_pool
+from models import (
+    Circle,
+    CircleCreation,
+    InvitationRejoindre,
+    Message,
+    MessageEnvoi,
+    MessageModification,
+    Profil,
+    ProfilEtat,
+)
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-app = FastAPI(title="IA Familiale API", version="0.1.0")
+app = FastAPI(title="IA Familiale API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,209 +35,348 @@ app.add_middleware(
 )
 
 DECLENCHEMENTS = {
-    "en_route":     "depart_travail",
-    "a_la_maison":  "arrivee_maison",
+    "en_route":    "depart_travail",
+    "a_la_maison": "arrivee_maison",
 }
 
-# Connexions WebSocket actives : membre_id → WebSocket
+# Connexions WebSocket actives : user_id → WebSocket
 connexions: dict[str, WebSocket] = {}
 
 
-# ─── Démarrage ───────────────────────────────────────────────────────────────
+# ─── Démarrage / Arrêt ────────────────────────────────────────────────────────
 
 @app.on_event("startup")
-def startup():
-    initialiser_db()
-    print("✅ Serveur IA Familiale démarré !")
+async def startup():
+    await get_pool()
+    print("✅ Serveur IA Familiale v2 démarré — PostgreSQL connecté !")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await fermer_pool()
 
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
-@app.websocket("/ws/{membre_id}")
-async def websocket_endpoint(websocket: WebSocket, membre_id: str):
-    """Ouvre un canal temps réel pour un membre."""
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """Canal temps réel pour un utilisateur connecté."""
     await websocket.accept()
-    connexions[membre_id] = websocket
-    print(f"🔌 {membre_id} connecté via WebSocket")
+    connexions[user_id] = websocket
+    print(f"🔌 {user_id} connecté via WebSocket")
     try:
         while True:
-            # Garde la connexion ouverte (le client envoie des pings)
-            await websocket.receive_text()
+            await websocket.receive_text()  # garde la connexion ouverte
     except WebSocketDisconnect:
-        connexions.pop(membre_id, None)
-        print(f"🔌 {membre_id} déconnecté")
+        connexions.pop(user_id, None)
+        print(f"🔌 {user_id} déconnecté")
 
 
-async def notifier(membre_id: str, data: dict):
-    """Pousse des données en temps réel vers un membre connecté."""
-    ws = connexions.get(membre_id)
+async def notifier(user_id: str, data: dict):
+    """Pousse des données en temps réel vers un utilisateur connecté."""
+    ws = connexions.get(user_id)
     if ws:
         try:
             await ws.send_json(data)
         except Exception:
-            connexions.pop(membre_id, None)
+            connexions.pop(user_id, None)
 
 
-# ─── Route de test ───────────────────────────────────────────────────────────
+# ─── Utilitaires ─────────────────────────────────────────────────────────────
+
+def maintenant_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+async def envoyer_push(push_token: str, expediteur_nom: str, texte: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://exp.host/--/api/v2/push/send",
+                json={
+                    "to": push_token,
+                    "title": f"Message de {expediteur_nom} 💬",
+                    "body": texte,
+                    "sound": "default",
+                },
+                timeout=5,
+            )
+    except Exception as e:
+        print(f"⚠️ Erreur push notification : {e}")
+
+
+# ─── Health check ─────────────────────────────────────────────────────────────
 
 @app.get("/")
 def accueil():
-    return {"message": "🏠 IA Familiale API fonctionne !"}
+    return {"message": "🏠 IA Familiale API v2 fonctionne !"}
 
 
-# ─── Membres ─────────────────────────────────────────────────────────────────
+# ─── Profil ──────────────────────────────────────────────────────────────────
 
-@app.get("/membres", response_model=list[Membre])
-def lister_membres():
-    conn = get_connexion()
-    membres = conn.execute("SELECT * FROM membres").fetchall()
-    conn.close()
-    return [dict(m) for m in membres]
-
-
-def envoyer_push(push_token: str, expediteur: str, texte: str):
-    try:
-        requests.post(
-            'https://exp.host/--/api/v2/push/send',
-            json={
-                'to': push_token,
-                'title': f'Message de {expediteur} 💬',
-                'body': texte,
-                'sound': 'default',
-            },
-            timeout=5,
-        )
-    except Exception as e:
-        print(f'⚠️ Erreur push notification : {e}')
-
-
-@app.post("/membres/{membre_id}/token")
-def sauvegarder_token(membre_id: str, data: dict):
-    conn = get_connexion()
-    conn.execute(
-        "UPDATE membres SET push_token = ? WHERE id = ?",
-        (data['push_token'], membre_id)
+@app.get("/profil", response_model=Profil)
+async def get_profil(user: dict = Depends(get_current_user)):
+    """Retourne le profil de l'utilisateur connecté."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id, nom, etat FROM public.profiles WHERE id = $1",
+        user["id"],
     )
-    conn.commit()
-    conn.close()
-    return {"ok": True}
-
-
-@app.post("/membres", response_model=Membre)
-def creer_membre(data: MembreCreation):
-    conn = get_connexion()
-    try:
-        conn.execute(
-            "INSERT INTO membres (id, nom) VALUES (?, ?)",
-            (data.id, data.nom)
-        )
-        conn.commit()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Ce membre existe déjà")
-    finally:
-        conn.close()
-    return {"id": data.id, "nom": data.nom, "etat": "au_travail"}
+    if not row:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    return dict(row)
 
 
 @app.post("/membres/{membre_id}/etat")
-async def changer_etat(membre_id: str, data: MembreEtat):
+async def changer_etat(membre_id: str, data: ProfilEtat, user: dict = Depends(get_current_user)):
     """
-    Change l'état d'un membre.
-    Déclenche la livraison des messages en attente
-    et notifie le membre via WebSocket.
+    Change l'état du membre connecté.
+    Déclenche la livraison des messages en attente et notifie via WebSocket.
     """
-    conn = get_connexion()
+    if membre_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Vous ne pouvez changer que votre propre état")
 
-    membre = conn.execute(
-        "SELECT * FROM membres WHERE id = ?", (membre_id,)
-    ).fetchone()
-    if not membre:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Membre introuvable")
+    pool = await get_pool()
 
-    conn.execute(
-        "UPDATE membres SET etat = ? WHERE id = ?",
-        (data.etat, membre_id)
+    # Met à jour l'état dans le profil
+    await pool.execute(
+        "UPDATE public.profiles SET etat = $1 WHERE id = $2",
+        data.etat, user["id"],
     )
 
     trigger_a_declencher = DECLENCHEMENTS.get(data.etat)
-    messages_livres = 0
+    messages_livres_count = 0
+    maintenant = maintenant_iso()
 
     if trigger_a_declencher:
-        maintenant = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        resultat = conn.execute(
-            """UPDATE messages
-               SET statut = 'livre', livre_a = ?
-               WHERE destinataire_id = ?
-                 AND trigger = ?
+        # Livre les messages en attente pour ce déclencheur
+        result = await pool.execute(
+            """UPDATE public.messages
+               SET statut = 'livre', livre_a = $1
+               WHERE destinataire_id = $2
+                 AND trigger = $3
                  AND statut = 'en_attente'""",
-            (maintenant, membre_id, trigger_a_declencher)
+            maintenant, user["id"], trigger_a_declencher,
         )
-        messages_livres = resultat.rowcount
+        # asyncpg retourne "UPDATE N" dans result
+        try:
+            messages_livres_count = int(str(result).split()[-1])
+        except (ValueError, IndexError):
+            messages_livres_count = 0
 
-    # Commit AVANT de notifier — sinon le client lirait des données pas encore commitées
-    conn.commit()
-    conn.close()
+    if messages_livres_count > 0:
+        # Récupère les messages qu'on vient de livrer
+        msgs = await pool.fetch(
+            """SELECT m.*, p.nom as expediteur_nom, dest.push_token
+               FROM public.messages m
+               JOIN public.profiles p   ON p.id   = m.expediteur_id
+               JOIN public.profiles dest ON dest.id = m.destinataire_id
+               WHERE m.destinataire_id = $1
+                 AND m.trigger = $2
+                 AND m.statut = 'livre'
+                 AND m.livre_a = $3""",
+            user["id"], trigger_a_declencher, maintenant,
+        )
 
-    if messages_livres > 0 and trigger_a_declencher:
-        conn2 = get_connexion()
-        msgs = conn2.execute(
-            """SELECT * FROM messages
-               WHERE destinataire_id = ? AND trigger = ?
-               AND statut = 'livre' AND livre_a = ?""",
-            (membre_id, trigger_a_declencher, maintenant)
-        ).fetchall()
-        conn2.close()
-
-        # Push notification vers le destinataire
-        push_token = dict(membre).get('push_token') if membre else None
+        # Push notification si le destinataire a un push token
+        push_token = msgs[0]["push_token"] if msgs else None
         if push_token:
             for msg in msgs:
-                envoyer_push(push_token, msg['expediteur_id'], msg['texte'])
+                await envoyer_push(push_token, msg["expediteur_nom"], msg["texte"])
 
-        # Notifie le destinataire (Cem) : recharge ses messages
-        await notifier(membre_id, {"type": "reload"})
+        # Notifie le destinataire : recharge ses messages
+        await notifier(user["id"], {"type": "reload"})
 
-        # Notifie aussi les expéditeurs : leur message passe de "en attente" à "livré"
-        for exp_id in {msg['expediteur_id'] for msg in msgs}:
+        # Notifie chaque expéditeur : son message est passé en "livré"
+        for exp_id in {str(msg["expediteur_id"]) for msg in msgs}:
             await notifier(exp_id, {"type": "reload"})
 
     return {
         "etat": data.etat,
-        "messages_livres": messages_livres,
-        "message": f"✅ {messages_livres} message(s) livré(s)"
+        "messages_livres": messages_livres_count,
+        "message": f"✅ {messages_livres_count} message(s) livré(s)",
+    }
+
+
+@app.put("/profil/token")
+async def sauvegarder_token(data: dict, user: dict = Depends(get_current_user)):
+    """Enregistre le push token Expo du téléphone."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE public.profiles SET push_token = $1 WHERE id = $2",
+        data["push_token"], user["id"],
+    )
+    return {"ok": True}
+
+
+# ─── Membres du cercle ────────────────────────────────────────────────────────
+
+@app.get("/membres", response_model=list[Profil])
+async def lister_membres(user: dict = Depends(get_current_user)):
+    """Retourne tous les membres du cercle familial de l'utilisateur connecté."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT p.id, p.nom, p.etat
+           FROM public.profiles p
+           INNER JOIN public.circle_members cm ON cm.user_id = p.id
+           WHERE cm.circle_id = (
+               SELECT circle_id FROM public.circle_members
+               WHERE user_id = $1
+               LIMIT 1
+           )""",
+        user["id"],
+    )
+    return [dict(r) for r in rows]
+
+
+# ─── Cercles ─────────────────────────────────────────────────────────────────
+
+@app.post("/circles", response_model=Circle)
+async def creer_circle(data: CircleCreation, user: dict = Depends(get_current_user)):
+    """Crée un nouveau cercle familial et y ajoute le créateur comme admin."""
+    pool = await get_pool()
+    circle_id = str(uuid.uuid4())
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """INSERT INTO public.circles (id, nom, created_by)
+                   VALUES ($1, $2, $3)""",
+                circle_id, data.nom, user["id"],
+            )
+            await conn.execute(
+                """INSERT INTO public.circle_members (circle_id, user_id, role)
+                   VALUES ($1, $2, 'admin')""",
+                circle_id, user["id"],
+            )
+
+    return {"id": circle_id, "nom": data.nom, "created_by": user["id"]}
+
+
+@app.get("/circles", response_model=list[Circle])
+async def lister_circles(user: dict = Depends(get_current_user)):
+    """Liste les cercles dont l'utilisateur est membre."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT c.id, c.nom, c.created_by::TEXT
+           FROM public.circles c
+           INNER JOIN public.circle_members cm ON cm.circle_id = c.id
+           WHERE cm.user_id = $1""",
+        user["id"],
+    )
+    return [dict(r) for r in rows]
+
+
+# ─── Invitations ─────────────────────────────────────────────────────────────
+
+@app.post("/circles/{circle_id}/inviter")
+async def creer_invitation(circle_id: str, user: dict = Depends(get_current_user)):
+    """
+    Génère un code d'invitation à partager avec un nouveau membre.
+    Seuls les admins du cercle peuvent inviter.
+    """
+    pool = await get_pool()
+
+    # Vérifie que l'utilisateur est admin du cercle
+    row = await pool.fetchrow(
+        """SELECT role FROM public.circle_members
+           WHERE circle_id = $1 AND user_id = $2""",
+        circle_id, user["id"],
+    )
+    if not row or row["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Réservé aux admins du cercle")
+
+    invitation_id = str(uuid.uuid4())
+    token = str(uuid.uuid4())
+
+    await pool.execute(
+        """INSERT INTO public.invitations (id, circle_id, inviteur_id, email_invite, token)
+           VALUES ($1, $2, $3, '', $4)""",
+        invitation_id, circle_id, user["id"], token,
+    )
+
+    return {"token": token, "message": "Partage ce code avec le membre à inviter"}
+
+
+@app.post("/invitations/rejoindre")
+async def rejoindre_circle(data: InvitationRejoindre, user: dict = Depends(get_current_user)):
+    """
+    Rejoint un cercle via un code d'invitation.
+    Le token est à usage unique (passe en statut 'accepte').
+    """
+    pool = await get_pool()
+
+    invitation = await pool.fetchrow(
+        """SELECT * FROM public.invitations
+           WHERE token = $1 AND statut = 'en_attente'""",
+        data.token,
+    )
+    if not invitation:
+        raise HTTPException(status_code=400, detail="Code invalide ou déjà utilisé")
+
+    circle_id = str(invitation["circle_id"])
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Ajoute l'utilisateur au cercle
+            await conn.execute(
+                """INSERT INTO public.circle_members (circle_id, user_id, role)
+                   VALUES ($1, $2, 'membre')
+                   ON CONFLICT DO NOTHING""",
+                circle_id, user["id"],
+            )
+            # Marque l'invitation comme acceptée
+            await conn.execute(
+                "UPDATE public.invitations SET statut = 'accepte' WHERE token = $1",
+                data.token,
+            )
+
+    # Récupère le cercle pour le retourner au client
+    circle = await pool.fetchrow(
+        "SELECT id, nom, created_by::TEXT FROM public.circles WHERE id = $1",
+        circle_id,
+    )
+    return {
+        "circle_id": circle_id,
+        "nom": circle["nom"],
+        "message": f"✅ Tu as rejoint « {circle['nom']} » !",
     }
 
 
 # ─── Messages ─────────────────────────────────────────────────────────────────
 
 @app.post("/messages", response_model=Message)
-async def envoyer_message(data: MessageEnvoi):
+async def envoyer_message(data: MessageEnvoi, user: dict = Depends(get_current_user)):
     """
-    Envoie un message et notifie le destinataire en temps réel via WebSocket.
+    Envoie un message dans un cercle et notifie le destinataire en temps réel.
     """
-    conn = get_connexion()
+    pool = await get_pool()
 
-    maintenant = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    maintenant = maintenant_iso()
     message_id = str(uuid.uuid4())
-
     statut  = "livre"    if data.trigger == "maintenant" else "en_attente"
     livre_a = maintenant if data.trigger == "maintenant" else None
 
-    conn.execute(
-        """INSERT INTO messages
-           (id, expediteur_id, destinataire_id, texte, trigger, statut, envoye_a, livre_a)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (message_id, data.expediteur_id, data.destinataire_id,
-         data.texte, data.trigger, statut, maintenant, livre_a)
+    await pool.execute(
+        """INSERT INTO public.messages
+           (id, expediteur_id, destinataire_id, circle_id, texte, trigger, statut, envoye_a, livre_a)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+        message_id,
+        user["id"],
+        data.destinataire_id,
+        data.circle_id,
+        data.texte,
+        data.trigger,
+        statut,
+        maintenant,
+        livre_a,
     )
-    conn.commit()
-    conn.close()
 
     message = {
         "id":               message_id,
-        "expediteur_id":    data.expediteur_id,
+        "expediteur_id":    user["id"],
         "destinataire_id":  data.destinataire_id,
+        "circle_id":        data.circle_id,
         "texte":            data.texte,
         "trigger":          data.trigger,
         "statut":           statut,
@@ -234,79 +384,79 @@ async def envoyer_message(data: MessageEnvoi):
         "livre_a":          livre_a,
     }
 
-    # Pousse le message en temps réel vers le destinataire
+    # Pousse le message vers le destinataire
     await notifier(data.destinataire_id, message)
 
     return message
 
 
 @app.patch("/messages/{message_id}")
-async def modifier_message(message_id: str, data: MessageModification):
+async def modifier_message(message_id: str, data: MessageModification, user: dict = Depends(get_current_user)):
     """Modifie le texte d'un message encore en attente."""
-    conn = get_connexion()
-    msg = conn.execute(
-        "SELECT * FROM messages WHERE id = ?", (message_id,)
-    ).fetchone()
+    pool = await get_pool()
 
-    if not msg or msg['statut'] != 'en_attente':
-        conn.close()
-        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
-
-    conn.execute(
-        "UPDATE messages SET texte = ? WHERE id = ?",
-        (data.texte, message_id)
+    msg = await pool.fetchrow(
+        "SELECT * FROM public.messages WHERE id = $1",
+        message_id,
     )
-    conn.commit()
-    conn.close()
+    if not msg or msg["statut"] != "en_attente":
+        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
+    if str(msg["expediteur_id"]) != user["id"]:
+        raise HTTPException(status_code=403, detail="Ce message ne vous appartient pas")
 
-    await notifier(msg['expediteur_id'], {"type": "reload"})
+    await pool.execute(
+        "UPDATE public.messages SET texte = $1 WHERE id = $2",
+        data.texte, message_id,
+    )
+
+    await notifier(user["id"], {"type": "reload"})
     return {"ok": True}
 
 
 @app.patch("/messages/{message_id}/annuler")
-async def annuler_message(message_id: str):
+async def annuler_message(message_id: str, user: dict = Depends(get_current_user)):
     """Annule un message encore en attente — il ne sera jamais livré."""
-    conn = get_connexion()
-    msg = conn.execute(
-        "SELECT * FROM messages WHERE id = ?", (message_id,)
-    ).fetchone()
+    pool = await get_pool()
 
-    if not msg or msg['statut'] != 'en_attente':
-        conn.close()
-        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
-
-    conn.execute(
-        "UPDATE messages SET statut = 'annule' WHERE id = ?",
-        (message_id,)
+    msg = await pool.fetchrow(
+        "SELECT * FROM public.messages WHERE id = $1",
+        message_id,
     )
-    conn.commit()
-    conn.close()
+    if not msg or msg["statut"] != "en_attente":
+        raise HTTPException(status_code=400, detail="Message introuvable ou déjà livré")
+    if str(msg["expediteur_id"]) != user["id"]:
+        raise HTTPException(status_code=403, detail="Ce message ne vous appartient pas")
 
-    await notifier(msg['expediteur_id'], {"type": "reload"})
+    await pool.execute(
+        "UPDATE public.messages SET statut = 'annule' WHERE id = $1",
+        message_id,
+    )
+
+    await notifier(user["id"], {"type": "reload"})
     return {"ok": True}
 
 
-@app.get("/messages/{destinataire_id}", response_model=list[Message])
-def get_messages(destinataire_id: str, tous: bool = False):
-    conn = get_connexion()
+@app.get("/messages/{user_id}", response_model=list[Message])
+async def get_messages(user_id: str, user: dict = Depends(get_current_user)):
+    """
+    Retourne tous les messages visibles pour l'utilisateur :
+    - Ses messages envoyés (tous statuts)
+    - Les messages qu'il a reçus ET qui sont livrés
+    """
+    if user_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Accès refusé")
 
-    if tous:
-        # Messages envoyés par moi (tous statuts) OU reçus ET déjà livrés
-        # → le destinataire ne voit pas les messages "en_attente" avant livraison
-        messages = conn.execute(
-            """SELECT * FROM messages
-               WHERE expediteur_id = ?
-                  OR (destinataire_id = ? AND statut = 'livre')
-               ORDER BY envoye_a""",
-            (destinataire_id, destinataire_id)
-        ).fetchall()
-    else:
-        messages = conn.execute(
-            """SELECT * FROM messages
-               WHERE destinataire_id = ? AND statut = 'livre'
-               ORDER BY envoye_a""",
-            (destinataire_id,)
-        ).fetchall()
+    pool = await get_pool()
 
-    conn.close()
-    return [dict(m) for m in messages]
+    rows = await pool.fetch(
+        """SELECT id, expediteur_id::TEXT, destinataire_id::TEXT, circle_id::TEXT,
+                  texte, trigger, statut,
+                  to_char(envoye_a AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS envoye_a,
+                  to_char(livre_a  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS livre_a
+           FROM public.messages
+           WHERE expediteur_id = $1
+              OR (destinataire_id = $1 AND statut = 'livre')
+           ORDER BY envoye_a""",
+        user["id"],
+    )
+    return [dict(r) for r in rows]
